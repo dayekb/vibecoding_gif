@@ -1,0 +1,113 @@
+name: Create GIF from Images
+
+on:
+  push:
+    paths:
+      - 'images/**'
+  pull_request:
+    paths:
+      - 'images/**'
+
+jobs:
+  create-gif:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Check if images directory exists and has content
+      id: check-images
+      run: |
+        if [ ! -d "images" ]; then
+          echo "Images directory not found"
+          exit 1
+        fi
+
+        image_count=$(find images -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) | wc -l)
+        echo "Found $image_count images"
+        echo "image_count=$image_count" >> $GITHUB_OUTPUT
+
+        if [ "$image_count" -eq 0 ]; then
+          echo "No images found in images directory"
+          exit 1
+        fi
+
+    - name: Install ImageMagick
+      run: sudo apt-get update && sudo apt-get install -y imagemagick
+
+    - name: Create GIF from images
+      run: |
+        # Создаем временную папку для обработки
+        mkdir -p temp_gif
+
+        # Копируем все изображения во временную папку
+        cp images/* temp_gif/ 2>/dev/null || true
+
+        # Если есть изображения в корне, тоже добавляем их
+        find . -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) -not -path "./temp_gif/*" -exec cp {} temp_gif/ \;
+
+        cd temp_gif
+
+        # Получаем список всех изображений и сортируем их по имени
+        images=$(ls -1 *.jpg *.jpeg *.png *.webp 2>/dev/null | sort)
+
+        if [ -n "$images" ]; then
+          echo "Creating GIF from: $images"
+          # Создаем GIF с задержкой 100мс между кадрами
+          convert -delay 100 -loop 0 $images combined_images.gif
+          # Копируем GIF в корень репозитория
+          cp combined_images.gif ../
+        fi
+
+    - name: Update README with GIF link
+      run: |
+        gif_filename="combined_images.gif"
+
+        if [ -f "$gif_filename" ]; then
+          echo "GIF created successfully: $gif_filename"
+
+          # Создаем или обновляем README
+          if [ ! -f "README.md" ]; then
+            echo "# Image Gallery" > README.md
+            echo "" >> README.md
+          fi
+
+          # Проверяем, есть ли уже ссылка на GIF в README
+          if grep -q "combined_images.gif" README.md; then
+            echo "GIF link already exists in README"
+          else
+            # Добавляем ссылку на GIF в README
+            echo "" >> README.md
+            echo "## Latest Combined Images" >> README.md
+            echo "" >> README.md
+            echo "![Combined Images]($gif_filename)" >> README.md
+            echo "" >> README.md
+            echo "*Автоматически созданный GIF из всех изображений в репозитории*" >> README.md
+          fi
+
+        else
+          echo "GIF file not found, README not updated"
+        fi
+
+    - name: Commit and push changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+
+        # Добавляем созданный GIF и обновленный README
+        git add combined_images.gif README.md
+
+        # Проверяем, есть ли изменения для коммита
+        if git diff --quiet && git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Автоматически: создание GIF из изображений и обновление README
+
+          - Создан комбинированный GIF из всех изображений
+          - Обновлен README с ссылкой на GIF"
+
+          git push
+        fi
