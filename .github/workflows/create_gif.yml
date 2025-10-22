@@ -11,14 +11,34 @@ on:
 jobs:
   create-gif:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0  # Полная история для лучшего кеширования
+
+    - name: Setup ImageMagick cache
+      uses: actions/cache@v4
+      id: cache-imagemagick
+      with:
+        path: |
+          /var/lib/apt/lists/*
+          /var/cache/apt/archives/imagemagick*.deb
+        key: imagemagick-apt-${{ runner.os }}-v1
+        restore-keys: |
+          imagemagick-apt-${{ runner.os }}-
+
+    - name: Install ImageMagick (fast)
+      run: |
+        if ! command -v convert &> /dev/null; then
+          echo "Installing ImageMagick..."
+          # Быстрая установка без лишних обновлений
+          sudo apt-get install -y imagemagick --no-install-recommends -q
+        else
+          echo "ImageMagick already installed"
+        fi
 
     - name: Check if images directory exists and has content
       id: check-images
@@ -37,10 +57,33 @@ jobs:
           exit 1
         fi
 
-    - name: Install ImageMagick
-      run: sudo apt-get update && sudo apt-get install -y imagemagick
+    - name: Check if GIF needs updating
+      id: check-gif
+      run: |
+        # Проверяем, изменились ли изображения с момента последнего создания GIF
+        images_hash=$(find images -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) -exec stat -c "%Y_%s" {} \; | sort | md5sum | cut -d' ' -f1)
+        echo "images_hash=$images_hash" >> $GITHUB_OUTPUT
+
+        if [ -f "combined_images.gif" ]; then
+          gif_mtime=$(stat -c "%Y" combined_images.gif)
+          newest_image=$(find images -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) -exec stat -c "%Y" {} \; | sort -n | tail -1)
+          echo "gif_mtime=$gif_mtime" >> $GITHUB_OUTPUT
+          echo "newest_image=$newest_image" >> $GITHUB_OUTPUT
+
+          if [ "$gif_mtime" -gt "$newest_image" ]; then
+            echo "gif_up_to_date=true" >> $GITHUB_OUTPUT
+            echo "GIF is up to date"
+          else
+            echo "gif_up_to_date=false" >> $GITHUB_OUTPUT
+            echo "Images have been updated since GIF creation"
+          fi
+        else
+          echo "gif_up_to_date=false" >> $GITHUB_OUTPUT
+          echo "No existing GIF found"
+        fi
 
     - name: Create GIF from images
+      if: steps.check-gif.outputs.gif_up_to_date != 'true'
       run: |
         # Создаем временную папку для обработки
         mkdir -p temp_gif
@@ -58,13 +101,14 @@ jobs:
 
         if [ -n "$images" ]; then
           echo "Creating GIF from: $images"
-          # Создаем GIF с задержкой 100мс между кадрами
-          convert -delay 100 -loop 0 $images combined_images.gif
+          # Создаем GIF с задержкой 100мс между кадрами и оптимизацией
+          convert -delay 100 -loop 0 -layers optimize $images combined_images.gif
           # Копируем GIF в корень репозитория
           cp combined_images.gif ../
         fi
 
     - name: Update README with GIF link
+      if: steps.check-gif.outputs.gif_up_to_date != 'true'
       run: |
         gif_filename="combined_images.gif"
 
@@ -95,6 +139,7 @@ jobs:
         fi
 
     - name: Commit and push changes
+      if: steps.check-gif.outputs.gif_up_to_date != 'true'
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
